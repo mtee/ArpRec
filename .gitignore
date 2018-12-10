@@ -2,7 +2,7 @@
 local.properties
 
 #built application files
-*.ap_
+# *.ap_
 
 # files for the dex VM
 *.dex
@@ -28,7 +28,10 @@ Thumbs.db
 .idea
 #.idea/workspace.xml - remove # and delete .idea if it better suit your needs.
 .gradle
-build/
+build/generated
+build/intermediates
+build/reports
+build/tmp
 .navigation
 captures/
 output.json 
