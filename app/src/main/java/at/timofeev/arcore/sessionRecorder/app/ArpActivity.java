@@ -16,10 +16,17 @@
 
 package at.timofeev.arcore.sessionRecorder.app;
 
+import android.content.Context;
+import android.graphics.ImageFormat;
+import android.hardware.camera2.CameraAccessException;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
+import android.media.Image;
 import android.opengl.EGL14;
 import android.opengl.EGLDisplay;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.support.v7.app.AppCompatActivity;
@@ -33,8 +40,10 @@ import android.widget.Toast;
 import com.google.ar.core.Anchor;
 import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Camera;
+import com.google.ar.core.CameraIntrinsics;
 import com.google.ar.core.Frame;
 import com.google.ar.core.HitResult;
+import com.google.ar.core.ImageMetadata;
 import com.google.ar.core.Plane;
 import com.google.ar.core.Point;
 import com.google.ar.core.Point.OrientationMode;
@@ -66,12 +75,16 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 
 import javax.microedition.khronos.egl.EGL10;
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.egl.EGLContext;
 import javax.microedition.khronos.opengles.GL10;
+
+import static com.google.ar.core.ImageMetadata.LENS_RADIAL_DISTORTION;
 
 
 public class ArpActivity extends AppCompatActivity implements GLSurfaceView.Renderer, VideoRecorder.VideoRecorderListener {
@@ -132,7 +145,7 @@ public class ArpActivity extends AppCompatActivity implements GLSurfaceView.Rend
 
 
         File extStore = Environment.getExternalStorageDirectory();
-        mWorkingDirectory = extStore.getAbsolutePath() + "/" + getString(R.string.app_name) + "/";
+        mWorkingDirectory = extStore.getAbsolutePath() + "/" + "ARCorePoseRecorder" + "/";
         extStore = new File(mWorkingDirectory);
         extStore.mkdirs();
 
@@ -146,7 +159,60 @@ public class ArpActivity extends AppCompatActivity implements GLSurfaceView.Rend
         surfaceView.setEGLConfigChooser(8, 8, 8, 8, 16, 0); // Alpha used for plane blending.
         surfaceView.setRenderer(this);
         surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
+        CameraManager manager = (CameraManager) this.getSystemService(Context.CAMERA_SERVICE);
+        try {
+            for (String cameraId : manager.getCameraIdList()) {
+                Log.d(TAG, "------------------------------ "+ cameraId +" ----------------------------------");
+                CameraCharacteristics characteristics
+                        = manager.getCameraCharacteristics(cameraId);
 
+                // Examine the LENS_FACING characteristic
+                Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
+                if(facing == null){
+                    Log.d(TAG, "Facing: NULL");
+                }
+                else if(facing == CameraCharacteristics.LENS_FACING_BACK){
+                    Log.d(TAG, "Facing: BACK");
+                } else if(facing == CameraCharacteristics.LENS_FACING_FRONT){
+                    Log.d(TAG, "Facing: FRONT");
+                } else if(facing == CameraCharacteristics.LENS_FACING_EXTERNAL){
+                    Log.d(TAG, "Facing: EXTERNAL");
+                } else {
+                    Log.d(TAG, "Facing: UNKNOWN");
+                }
+
+                // Check if the flash is supported.
+                Boolean available = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                if(available == null){
+                    Log.d(TAG, "Flash unknown");
+                }
+                else if(available){
+                    Log.d(TAG, "Flash supported");
+                } else {
+                    Log.d(TAG, "Flash unsupported");
+                }
+
+                // Check how much the zoom is supported
+                Float zoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+                Log.d(TAG, "Max supported digital zoom: " + zoom);
+
+                // Write all the available focal lengths
+                float[] focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                Log.d(TAG, "Available focal lengths: " + Arrays.toString(focalLengths));
+
+                // Check the distortion
+                if (Build.VERSION.SDK_INT >= 23) {
+                    float[] lensDistortionCoefficients = characteristics.get(CameraCharacteristics.LENS_RADIAL_DISTORTION);
+                    Log.d(TAG, "Lens distortion coefficients : " + Arrays.toString(lensDistortionCoefficients));
+                }
+
+                Log.d(TAG, "----------------------------------------------------------------");
+            }
+        } catch (CameraAccessException e) {
+            Log.d(TAG, "CameraAccessException: " + e.getMessage());
+        } catch (NullPointerException e) {
+            Log.d(TAG, "NullPointerException: " + e.getMessage());
+        }
         installRequested = false;
     }
 
@@ -328,13 +394,16 @@ public class ArpActivity extends AppCompatActivity implements GLSurfaceView.Rend
             float[] viewmtx = new float[16];
             camera.getViewMatrix(viewmtx, 0);
             backgroundRenderer.draw(frame);  // draw camera see-through
+
+      //      Log.d(TAG, "Available focal lengths: " + Arrays.toString(distortion));
             PointCloud pointCloud = frame.acquirePointCloud();
             pointCloudRenderer.update(pointCloud);
             pointCloudRenderer.draw(viewmtx, projmtx);
 
             if (mRecorder!= null && mRecorder.isRecording() && posesFileCreated) {
-
-                bufWriter.append("" + frameId  + " " + getPoseAsString(camera.getPose()));
+                bufWriter.append("" + frameId  + " " + getPoseAsString(camera.getPose()) + " " + getIntrinsicsAsString(camera.getTextureIntrinsics())
+                   //     + " " + distortion[0] + " " + distortion[1] + " " + distortion[2] + " " + distortion[3] + " " + distortion[4]
+                );
                 bufWriter.newLine();
                 frameId++;
                 VideoRecorder.CaptureContext ctx = mRecorder.startCapture();
@@ -387,6 +456,11 @@ public class ArpActivity extends AppCompatActivity implements GLSurfaceView.Rend
     private String getPoseAsString(Pose pose) {
         return pose.tx() + " " + pose.ty() + " " + pose.tz() + " " + pose.qx() + " " + pose.qy() + " " + pose.qz() + " " + pose.qw();
     }
+    private String getIntrinsicsAsString(CameraIntrinsics intrinsics) {
+        return intrinsics.getFocalLength()[0] + " " + intrinsics.getFocalLength()[1] + " " +
+                intrinsics.getImageDimensions()[0] + " " + intrinsics.getImageDimensions()[1] + " " +
+                intrinsics.getPrincipalPoint()[0] + " " + intrinsics.getPrincipalPoint()[1];
+    }
 
     public void clickToggleRecording(View view) {
         Log.d(TAG, "clickToggleRecording");
@@ -415,12 +489,12 @@ public class ArpActivity extends AppCompatActivity implements GLSurfaceView.Rend
 
     private void updateControls() {
         Button toggleRelease = findViewById(R.id.fboRecord_button);
-        int id = (mRecorder != null && mRecorder.isRecording()) ?
-                R.string.toggleRecordingOff : R.string.toggleRecordingOn;
-        toggleRelease.setText(id);
+        String recordButtonStr = (mRecorder != null && mRecorder.isRecording()) ?
+                "Stop" : "Record";
+        toggleRelease.setText(recordButtonStr);
         TextView tv =  findViewById(R.id.nowRecording_text);
-        if (id == R.string.toggleRecordingOff) {
-            tv.setText(getString(R.string.nowRecording));
+        if (recordButtonStr == "Stop") {
+            tv.setText("recording");
         } else {
             tv.setText("");
         }
